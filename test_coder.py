@@ -4,6 +4,7 @@ import sys
 from types import SimpleNamespace
 from pathlib import Path
 
+from agent.cloner import CLONE_TIMEOUT_SECONDS, RepoCloner
 from agent.models import ReviewComment
 from agent.output import comments_to_markdown
 from agent.parser import PythonASTParser
@@ -35,6 +36,46 @@ def test_parser_reports_syntax_error_as_chunk(tmp_path: Path):
     assert chunks[0].parse_error
 
 
+def test_parser_includes_decorators_in_symbol_chunk(tmp_path: Path):
+    source = "\n".join(
+        [
+            "from flask import Flask",
+            "app = Flask(__name__)",
+            "",
+            "@app.route('/health')",
+            "def health():",
+            "    return 'ok'",
+        ]
+    )
+    file_path = tmp_path / "app.py"
+    file_path.write_text(source, encoding="utf-8")
+
+    chunks = PythonASTParser().parse_file(file_path, "app.py")
+    route_chunk = next(chunk for chunk in chunks if "def health" in chunk.code)
+
+    assert route_chunk.start_line == 4
+    assert "@app.route('/health')" in route_chunk.code
+
+
+def test_parser_includes_trailing_module_level_code(tmp_path: Path):
+    source = "\n".join(
+        [
+            "def main():",
+            "    return 1",
+            "",
+            "if __name__ == '__main__':",
+            "    main()",
+        ]
+    )
+    file_path = tmp_path / "cli.py"
+    file_path.write_text(source, encoding="utf-8")
+
+    chunks = PythonASTParser().parse_file(file_path, "cli.py")
+
+    assert any("if __name__ == '__main__':" in chunk.code for chunk in chunks)
+    assert any("def main" in chunk.code for chunk in chunks)
+
+
 def test_reviewer_confidence_and_verify_label():
     comment = ReviewComment(
         file_path="x.py",
@@ -48,6 +89,25 @@ def test_reviewer_confidence_and_verify_label():
     )
 
     assert comment.verify_label == "verify this"
+
+
+def test_git_clone_uses_process_level_timeout(monkeypatch, tmp_path: Path):
+    seen = {}
+
+    class FakeGit:
+        def execute(self, command, **kwargs):
+            seen["command"] = command
+            seen["kwargs"] = kwargs
+            return 0, "", ""
+
+    monkeypatch.setattr("agent.cloner.git.Git", lambda: FakeGit())
+
+    cloner = RepoCloner(base_dir=str(tmp_path))
+    cloner._run_git_clone("https://github.com/owner/repo", tmp_path / "repo", lambda message: None)
+
+    assert seen["command"][:4] == ["git", "clone", "--depth", "1"]
+    assert seen["kwargs"]["kill_after_timeout"] == CLONE_TIMEOUT_SECONDS
+    assert seen["kwargs"]["with_extended_output"] is True
 
 
 def test_heuristic_reviewer_finds_security_issue(tmp_path: Path):

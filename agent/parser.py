@@ -68,19 +68,27 @@ class PythonASTParser:
 
         imports = self._imports(tree)
         symbols = self._symbols(tree)
-        top_level_nodes = [
-            node for node in tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        ]
+        top_level_nodes = [node for node in tree.body if self._is_symbol_node(node)]
 
         if not top_level_nodes:
             return self._window_chunks(display, lines, imports=imports)
 
         chunks: List[CodeChunk] = []
-        used_ranges: List[tuple[int, int]] = []
+        cursor = 1
         for node in top_level_nodes:
-            start = getattr(node, "lineno", 1)
+            start = self._node_start(node)
             end = getattr(node, "end_lineno", start)
+            if cursor < start:
+                chunks.extend(
+                    self._gap_chunks(
+                        display=display,
+                        lines=lines,
+                        start=cursor,
+                        end=start - 1,
+                        imports=imports,
+                    )
+                )
+
             node_lines = lines[start - 1:end]
             node_symbols = [s for s in symbols if start <= s.start_line <= end]
             if len(node_lines) > self.max_chunk_lines:
@@ -105,25 +113,33 @@ class PythonASTParser:
                         imports=imports,
                     )
                 )
-            used_ranges.append((start, end))
+            cursor = max(cursor, end + 1)
 
-        module_prelude = self._module_prelude(lines, used_ranges)
-        if module_prelude.strip():
-            end_line = len(module_prelude.splitlines())
-            chunks.insert(
-                0,
-                CodeChunk(
-                    file_path=display,
-                    language="python",
-                    start_line=1,
-                    end_line=end_line,
-                    code=module_prelude,
+        if cursor <= len(lines):
+            chunks.extend(
+                self._gap_chunks(
+                    display=display,
+                    lines=lines,
+                    start=cursor,
+                    end=len(lines),
                     imports=imports,
-                    symbols=[],
-                ),
+                )
             )
 
         return chunks
+
+    def _gap_chunks(
+        self,
+        display: str,
+        lines: Sequence[str],
+        start: int,
+        end: int,
+        imports: List[str],
+    ) -> List[CodeChunk]:
+        gap_lines = lines[start - 1:end]
+        if not any(line.strip() for line in gap_lines):
+            return []
+        return self._window_chunks(display, gap_lines, start_offset=start, imports=imports)
 
     def _window_chunks(
         self,
@@ -159,10 +175,12 @@ class PythonASTParser:
         symbols: List[CodeSymbol] = []
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
-                symbols.append(CodeSymbol(node.name, "class", node.lineno, node.end_lineno or node.lineno))
+                start = self._node_start(node)
+                symbols.append(CodeSymbol(node.name, "class", start, node.end_lineno or node.lineno))
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 kind = "async_function" if isinstance(node, ast.AsyncFunctionDef) else "function"
-                symbols.append(CodeSymbol(node.name, kind, node.lineno, node.end_lineno or node.lineno))
+                start = self._node_start(node)
+                symbols.append(CodeSymbol(node.name, kind, start, node.end_lineno or node.lineno))
         return sorted(symbols, key=lambda item: (item.start_line, item.name))
 
     def _imports(self, tree: ast.AST) -> List[str]:
@@ -175,8 +193,12 @@ class PythonASTParser:
                 imports.append(module if node.level == 0 else "." * node.level + module)
         return sorted(set(imports))
 
-    def _module_prelude(self, lines: Sequence[str], used_ranges: Sequence[tuple[int, int]]) -> str:
-        if not used_ranges:
-            return "\n".join(lines[: self.max_chunk_lines])
-        first_symbol_line = min(start for start, _ in used_ranges)
-        return "\n".join(lines[: max(0, first_symbol_line - 1)]).strip()
+    def _is_symbol_node(self, node: ast.AST) -> bool:
+        return isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+
+    def _node_start(self, node: ast.AST) -> int:
+        start = getattr(node, "lineno", 1)
+        decorators = getattr(node, "decorator_list", None) or []
+        if decorators:
+            start = min(start, *(getattr(decorator, "lineno", start) for decorator in decorators))
+        return start

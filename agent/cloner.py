@@ -6,7 +6,6 @@ import re
 import shutil
 import socket
 import tempfile
-import threading
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -111,7 +110,7 @@ class RepoCloner:
         repo_name = clean_url.rstrip("/").split("/")[-1].replace(".git", "") or "repo"
         dest = self.base_dir / repo_name
         if dest.exists():
-            shutil.rmtree(dest)
+            self._remove_tree(dest)
 
         notify(f"Cloning status: Pulling '{repo_name}' from GitHub...")
         repo, git_err = self._clone_with_timeout(clean_url, dest, notify)
@@ -123,7 +122,7 @@ class RepoCloner:
         py_files = [file for file in all_files if file.endswith(".py")]
 
         if not all_files:
-            shutil.rmtree(dest, ignore_errors=True)
+            self._remove_tree(dest)
             return self._fail(github_url, "Repository is empty; nothing to review.", repo_name=repo_name)
 
         if not py_files:
@@ -156,11 +155,17 @@ class RepoCloner:
     def cleanup(self) -> None:
         """Delete cloned repositories and clear the session cache."""
         if self.base_dir.exists():
-            try:
-                shutil.rmtree(self.base_dir, onexc=self._handle_remove_readonly)
-            except TypeError:
-                shutil.rmtree(self.base_dir, onerror=self._handle_remove_readonly_legacy)
+            self._remove_tree(self.base_dir)
         self._cache.clear()
+
+    def _remove_tree(self, path: Path) -> None:
+        """Remove a directory tree, including read-only Git pack files on Windows."""
+        if not path.exists():
+            return
+        try:
+            shutil.rmtree(path, onexc=self._handle_remove_readonly)
+        except TypeError:
+            shutil.rmtree(path, onerror=self._handle_remove_readonly_legacy)
 
     def _handle_remove_readonly(self, function, path, excinfo) -> None:
         """Retry Windows cleanup after making Git pack files writable."""
@@ -231,37 +236,32 @@ class RepoCloner:
         dest: Path,
         notify: Callable[[str], None],
     ) -> tuple[Optional[git.Repo], str]:
-        result_box: Dict[str, object] = {}
+        try:
+            self._run_git_clone(url, dest, notify)
+            return git.Repo(str(dest)), ""
+        except git.exc.GitCommandError as exc:
+            self._remove_tree(dest)
+            return None, self._parse_git_error(str(exc), url)
+        except Exception as exc:
+            self._remove_tree(dest)
+            return None, f"Unexpected error during clone: {exc}"
 
-        def do_clone() -> None:
-            try:
-                result_box["repo"] = git.Repo.clone_from(
-                    url + ".git",
-                    str(dest),
-                    depth=1,
-                    progress=CloneProgress(notify),
-                )
-            except git.exc.GitCommandError as exc:
-                result_box["error"] = self._parse_git_error(str(exc), url)
-            except Exception as exc:
-                result_box["error"] = f"Unexpected error during clone: {exc}"
-
-        thread = threading.Thread(target=do_clone, daemon=True)
-        thread.start()
-        thread.join(timeout=CLONE_TIMEOUT_SECONDS)
-
-        if thread.is_alive():
-            shutil.rmtree(dest, ignore_errors=True)
-            return None, (
-                f"Clone timed out after {CLONE_TIMEOUT_SECONDS}s. "
-                "The repository may be too large or the connection too slow."
-            )
-
-        if "error" in result_box:
-            shutil.rmtree(dest, ignore_errors=True)
-            return None, str(result_box["error"])
-
-        return result_box.get("repo"), ""
+    def _run_git_clone(self, url: str, dest: Path, notify: Callable[[str], None]) -> None:
+        """Run git clone with GitPython's process-level timeout handling."""
+        notify("Git clone process started...")
+        git.Git().execute(
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--progress",
+                url + ".git",
+                str(dest),
+            ],
+            kill_after_timeout=CLONE_TIMEOUT_SECONDS,
+            with_extended_output=True,
+        )
 
     def _get_branch(self, repo: git.Repo) -> str:
         try:
@@ -296,6 +296,11 @@ class RepoCloner:
             return "Network error: could not reach GitHub. Check your connection."
         if "already exists and is not an empty directory" in low:
             return "Destination folder already exists; please try again."
+        if "timeout" in low or "kill_after_timeout" in low or "auto interrupt" in low:
+            return (
+                f"Clone timed out after {CLONE_TIMEOUT_SECONDS}s. "
+                "The repository may be too large or the connection too slow."
+            )
         return f"Git error: {raw[:300]}"
 
     def _fail(self, url: str, error: str, repo_name: str = "") -> CloneResult:
