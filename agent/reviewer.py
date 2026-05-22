@@ -61,6 +61,7 @@ class CodeReviewer:
         "google": "gemini-2.5-flash",
         "gemini": "gemini-2.5-flash",
         "openai": "gpt-4o-mini",
+        "grok": "grok-2",
     }
 
     def __init__(
@@ -87,6 +88,12 @@ class CodeReviewer:
             except Exception as exc:
                 return self._handle_fallback(chunk, f"OpenAI ({self.model}) rate limits or server issues. Error: {exc}")
 
+        elif self.provider == "grok" and os.getenv("XAI_API_KEY"):
+            try:
+                return self._retry_with_backoff(lambda: self._review_with_grok(chunk))
+            except Exception as exc:
+                return self._handle_fallback(chunk, f"xAI Grok ({self.model}) rate limits or server issues. Error: {exc}")
+
         elif self.provider in {"google", "gemini"} and self._google_api_key():
             try:
                 return self._retry_with_backoff(lambda: self._review_with_gemini(chunk))
@@ -100,6 +107,8 @@ class CodeReviewer:
             return bool(self._google_api_key())
         if self.provider == "openai":
             return bool(os.getenv("OPENAI_API_KEY"))
+        if self.provider == "grok":
+            return bool(os.getenv("XAI_API_KEY"))
         return False
 
     def _retry_with_backoff(self, api_call_func: Any) -> Any:
@@ -170,6 +179,28 @@ class CodeReviewer:
         content = response.choices[0].message.content or "{}"
         payload = self._parse_json_defensively(content)
         return self._comments_from_payload(payload, chunk, source="openai")
+
+    def _review_with_grok(self, chunk: CodeChunk) -> List[ReviewComment]:
+        from openai import OpenAI
+
+        api_key = os.getenv("XAI_API_KEY")
+        if not api_key:
+            raise ValueError("Set XAI_API_KEY for xAI Grok review.")
+
+        client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+        response = client.chat.completions.create(
+            model=self.model,
+            temperature=0.1,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": self._build_user_prompt(chunk)},
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=1200,
+        )
+        content = response.choices[0].message.content or "{}"
+        payload = self._parse_json_defensively(content)
+        return self._comments_from_payload(payload, chunk, source="grok")
 
     def _review_with_gemini(self, chunk: CodeChunk) -> List[ReviewComment]:
         import requests

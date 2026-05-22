@@ -21,10 +21,10 @@ with st.sidebar:
     use_llm = st.toggle("Use LLM review", value=True)
     provider = st.selectbox(
         "Provider",
-        ["google", "openai"],
-        format_func=lambda value: "Google AI Studio" if value == "google" else "OpenAI",
+        ["google", "openai", "grok"],
+        format_func=lambda value: "Google AI Studio" if value == "google" else ("OpenAI" if value == "openai" else "xAI Grok"),
     )
-    default_model = "gemini-2.5-flash" if provider == "google" else "gpt-4o-mini"
+    default_model = "gemini-2.5-flash" if provider == "google" else ("gpt-4o-mini" if provider == "openai" else "grok-2")
     model = st.text_input("Model", value=default_model)
     if provider == "google":
         google_key = st.text_input("Google AI Studio API key", type="password")
@@ -32,12 +32,18 @@ with st.sidebar:
             os.environ["GEMINI_API_KEY"] = google_key
         elif use_llm and not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
             st.caption("Set GEMINI_API_KEY, GOOGLE_API_KEY, or paste a key here.")
-    else:
+    elif provider == "openai":
         openai_key = st.text_input("OpenAI API key", type="password")
         if openai_key:
             os.environ["OPENAI_API_KEY"] = openai_key
         elif use_llm and not os.getenv("OPENAI_API_KEY"):
             st.caption("Set OPENAI_API_KEY or paste a key here.")
+    elif provider == "grok":
+        grok_key = st.text_input("xAI Grok API key", type="password")
+        if grok_key:
+            os.environ["XAI_API_KEY"] = grok_key
+        elif use_llm and not os.getenv("XAI_API_KEY"):
+            st.caption("Set XAI_API_KEY or paste a key here.")
     max_chunks = st.slider("Max chunks to review", min_value=1, max_value=100, value=50)
     run_review = st.button("Run review", type="primary", use_container_width=True)
 
