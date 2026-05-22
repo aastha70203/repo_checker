@@ -6,17 +6,17 @@ Run with: python test_cloner.py
 import sys
 from agent.cloner import RepoCloner
 
-PASS = "✅ PASS"
-FAIL = "❌ FAIL"
+PASS = "PASS"
+FAIL = "FAIL"
 
 def run_test(label, url, expect_success, expect_warning_contains=None, expect_error_contains=None):
-    print(f"\n{'─'*60}")
+    print(f"\n{'-'*60}")
     print(f"TEST : {label}")
     print(f"URL  : {url}")
-    print(f"{'─'*60}")
+    print(f"{'-'*60}")
 
     cloner = RepoCloner()
-    result = cloner.clone(url, progress_callback=lambda m: print(f"  → {m}"))
+    result = cloner.clone(url, progress_callback=lambda m: print(f"  -> {m}"))
     print(result.summary())
 
     passed = True
@@ -33,7 +33,7 @@ def run_test(label, url, expect_success, expect_warning_contains=None, expect_er
             print(f"  Expected warning containing '{expect_warning_contains}', got: {result.warnings}")
             passed = False
         else:
-            print(f"  ✓ Warning correctly contains '{expect_warning_contains}'")
+            print(f"  [OK] Warning correctly contains '{expect_warning_contains}'")
 
     # Check error message contains expected substring
     if expect_error_contains:
@@ -41,10 +41,10 @@ def run_test(label, url, expect_success, expect_warning_contains=None, expect_er
             print(f"  Expected error containing '{expect_error_contains}', got: {result.error}")
             passed = False
         else:
-            print(f"  ✓ Error correctly contains '{expect_error_contains}'")
+            print(f"  [OK] Error correctly contains '{expect_error_contains}'")
 
     if result.success:
-        print(f"  📁 File tree (first 8):")
+        print(f"  [File tree] (first 8):")
         for f in result.file_tree[:8]:
             print(f"     {f}")
 
@@ -55,27 +55,27 @@ def run_test(label, url, expect_success, expect_warning_contains=None, expect_er
 
 def run_cache_test():
     """Clone the same URL twice — second should be instant from cache."""
-    print(f"\n{'─'*60}")
+    print(f"\n{'-'*60}")
     print(f"TEST : Session cache — same URL cloned twice")
-    print(f"{'─'*60}")
+    print(f"{'-'*60}")
 
     cloner = RepoCloner()
     url = "https://github.com/karpathy/micrograd"
 
     import time
     t0 = time.time()
-    r1 = cloner.clone(url, progress_callback=lambda m: print(f"  [1] → {m}"))
+    r1 = cloner.clone(url, progress_callback=lambda m: print(f"  [1] -> {m}"))
     t1 = time.time() - t0
 
     t0 = time.time()
-    r2 = cloner.clone(url, progress_callback=lambda m: print(f"  [2] → {m}"))
+    r2 = cloner.clone(url, progress_callback=lambda m: print(f"  [2] -> {m}"))
     t2 = time.time() - t0
 
     print(f"  First  clone : {t1:.2f}s  (from_cache={r1.from_cache})")
     print(f"  Second clone : {t2:.2f}s  (from_cache={r2.from_cache})")
 
     passed = r1.success and r2.success and r2.from_cache and t2 < 0.5
-    print(f"  ✓ Second clone was instant from cache" if passed else "  Second clone was NOT served from cache")
+    print(f"  [OK] Second clone was instant from cache" if passed else "  Second clone was NOT served from cache")
     print(f"\n  {PASS if passed else FAIL}")
     cloner.cleanup()
     return passed
@@ -169,7 +169,7 @@ if __name__ == "__main__":
     # ── Summary ──────────────────────────────────────────────────────────────
     passed = sum(results)
     total  = len(results)
-    print(f"\n{'═'*60}")
+    print(f"\n{'-'*60}")
     print(f"RESULTS: {passed}/{total} tests passed")
-    print('═'*60)
+    print('-'*60)
     sys.exit(0 if passed == total else 1)

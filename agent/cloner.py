@@ -249,19 +249,37 @@ class RepoCloner:
     def _run_git_clone(self, url: str, dest: Path, notify: Callable[[str], None]) -> None:
         """Run git clone with GitPython's process-level timeout handling."""
         notify("Git clone process started...")
-        git.Git().execute(
-            [
-                "git",
-                "clone",
-                "--depth",
-                "1",
-                "--progress",
-                url + ".git",
-                str(dest),
-            ],
-            kill_after_timeout=CLONE_TIMEOUT_SECONDS,
-            with_extended_output=True,
-        )
+        try:
+            git.Git().execute(
+                [
+                    "git",
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--progress",
+                    url + ".git",
+                    str(dest),
+                ],
+                kill_after_timeout=CLONE_TIMEOUT_SECONDS,
+                with_extended_output=True,
+            )
+        except git.exc.GitCommandError as exc:
+            if "kill_after_timeout" in str(exc):
+                git.Git().execute(
+                    [
+                        "git",
+                        "clone",
+                        "--depth",
+                        "1",
+                        "--progress",
+                        url + ".git",
+                        str(dest),
+                    ],
+                    with_extended_output=True,
+                )
+            else:
+                raise exc
+
 
     def _get_branch(self, repo: git.Repo) -> str:
         try:
