@@ -156,11 +156,22 @@ class RepoCloner:
     def cleanup(self) -> None:
         """Delete cloned repositories and clear the session cache."""
         if self.base_dir.exists():
-            shutil.rmtree(self.base_dir, onexc=self._handle_remove_readonly)
+            try:
+                shutil.rmtree(self.base_dir, onexc=self._handle_remove_readonly)
+            except TypeError:
+                shutil.rmtree(self.base_dir, onerror=self._handle_remove_readonly_legacy)
         self._cache.clear()
 
     def _handle_remove_readonly(self, function, path, excinfo) -> None:
         """Retry Windows cleanup after making Git pack files writable."""
+        try:
+            Path(path).chmod(stat.S_IWRITE)
+            function(path)
+        except Exception:
+            raise excinfo[1]
+
+    def _handle_remove_readonly_legacy(self, function, path, excinfo) -> None:
+        """Compatibility callback for Python versions before shutil.rmtree(onexc=...)."""
         try:
             Path(path).chmod(stat.S_IWRITE)
             function(path)

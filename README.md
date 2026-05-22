@@ -7,7 +7,8 @@ An autonomous Streamlit app that clones public GitHub repositories, parses Pytho
 - GitHub ingestion with URL normalization, shallow clone, timeout handling, cache, and friendly failure messages.
 - Python AST parsing for imports, classes, functions, syntax errors, and line-preserving chunks.
 - Large-file chunking so long functions and modules remain reviewable.
-- OpenAI `gpt-4o-mini` structured JSON review when `OPENAI_API_KEY` is set.
+- Google AI Studio / Gemini structured JSON review when `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set.
+- Optional OpenAI `gpt-4o-mini` review path when `OPENAI_API_KEY` is set.
 - Deterministic fallback reviewer for demo/tests when no API key is available.
 - Confidence scores from 0-100 percent, with comments below 60 percent shown as `verify this`.
 - Streamlit dashboard with severity/category/confidence filters and Markdown/JSON downloads.
@@ -17,14 +18,23 @@ An autonomous Streamlit app that clones public GitHub repositories, parses Pytho
 
 ```bash
 pip install -r requirements.txt
-set OPENAI_API_KEY=your_key_here
+set GEMINI_API_KEY=your_google_ai_studio_key_here
 streamlit run app.py
 ```
+
+The dashboard sidebar also supports pasting a temporary Google AI Studio or OpenAI API key for the current session.
 
 For a no-key local demo:
 
 ```bash
 python coder.py psf/requests --no-llm
+```
+
+To run with Google AI Studio from the CLI:
+
+```bash
+set GEMINI_API_KEY=your_google_ai_studio_key_here
+python coder.py psf/requests --provider google --model gemini-2.5-flash
 ```
 
 ## Architecture
@@ -34,7 +44,7 @@ flowchart LR
     A["GitHub repo URL"] --> B["RepoCloner - GitPython"]
     B --> C["PythonASTParser - ast"]
     C --> D["CodeChunk list"]
-    D --> E["CodeReviewer - OpenAI JSON or fallback"]
+    D --> E["CodeReviewer - Google AI Studio JSON or fallback"]
     E --> F["ReviewComment objects"]
     F --> G["Streamlit dashboard"]
     F --> H["Markdown and JSON exports"]

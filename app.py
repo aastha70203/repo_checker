@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 import streamlit as st
 
@@ -16,7 +18,26 @@ st.title("AI Code Review Agent")
 
 with st.sidebar:
     repo_url = st.text_input("GitHub repository", placeholder="psf/requests")
-    use_llm = st.toggle("Use OpenAI LLM", value=True)
+    use_llm = st.toggle("Use LLM review", value=True)
+    provider = st.selectbox(
+        "Provider",
+        ["google", "openai"],
+        format_func=lambda value: "Google AI Studio" if value == "google" else "OpenAI",
+    )
+    default_model = "gemini-2.5-flash" if provider == "google" else "gpt-4o-mini"
+    model = st.text_input("Model", value=default_model)
+    if provider == "google":
+        google_key = st.text_input("Google AI Studio API key", type="password")
+        if google_key:
+            os.environ["GEMINI_API_KEY"] = google_key
+        elif use_llm and not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
+            st.caption("Set GEMINI_API_KEY, GOOGLE_API_KEY, or paste a key here.")
+    else:
+        openai_key = st.text_input("OpenAI API key", type="password")
+        if openai_key:
+            os.environ["OPENAI_API_KEY"] = openai_key
+        elif use_llm and not os.getenv("OPENAI_API_KEY"):
+            st.caption("Set OPENAI_API_KEY or paste a key here.")
     max_chunks = st.slider("Max chunks to review", min_value=1, max_value=100, value=50)
     run_review = st.button("Run review", type="primary", use_container_width=True)
 
@@ -38,7 +59,7 @@ if run_review:
             progress.code("\n".join(status_lines[-10:]))
 
     with st.spinner("Reviewing repository..."):
-        agent = CodeReviewAgent(max_chunks=max_chunks, use_llm=use_llm)
+        agent = CodeReviewAgent(max_chunks=max_chunks, use_llm=use_llm, provider=provider, model=model.strip() or None)
         st.session_state["review_run"] = agent.review_repository(repo_url, progress_callback=update)
 
 run = st.session_state.get("review_run")
@@ -57,9 +78,6 @@ comments = run.comments
 high_conf = run.high_confidence_comments
 low_conf = run.low_confidence_comments
 
-# =========================================================================
-# 🔥 PIZZAZZ #1: REPO HEALTH SCORE GRAPHICAL BANNER & CALCULATION
-# =========================================================================
 severity_deductions = {
     "critical": 20,
     "high": 10,
@@ -77,25 +95,19 @@ for c in comments:
 health_score = max(0, min(100, health_score))
 
 if health_score >= 85:
-    score_emoji = "🟢"
     score_status = "Excellent / Highly Maintainable"
-    st.success(f"### {score_emoji} Repository Health Score: {health_score}/100 — **{score_status}**")
+    st.success(f"### Repository Health Score: {health_score}/100 - **{score_status}**")
 elif health_score >= 60:
-    score_emoji = "🟡"
     score_status = "Needs Active Attention / Structural Concerns"
-    st.warning(f"### {score_emoji} Repository Health Score: {health_score}/100 — **{score_status}**")
+    st.warning(f"### Repository Health Score: {health_score}/100 - **{score_status}**")
 else:
-    score_emoji = "🔴"
     score_status = "Critical Security or Runtime Stability Risks"
-    st.error(f"### {score_emoji} Repository Health Score: {health_score}/100 — **{score_status}**")
+    st.error(f"### Repository Health Score: {health_score}/100 - **{score_status}**")
 
 # Visual feedback bar element
 st.progress(health_score / 100)
 st.markdown("---")
 
-# =========================================================================
-# 📊 RECONFIGURED COMPREHENSIVE METRICS GRID
-# =========================================================================
 metric_cols = st.columns(5)
 metric_cols[0].metric("Chunks Reviewed", run.chunks_reviewed)
 metric_cols[1].metric("Total Comments", len(comments))

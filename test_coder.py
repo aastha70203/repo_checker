@@ -57,6 +57,32 @@ def test_heuristic_reviewer_finds_security_issue(tmp_path: Path):
     assert all(0 <= c.confidence <= 100 for c in comments)
 
 
+def test_reviewer_provider_defaults():
+    assert CodeReviewer(provider="google").model == "gemini-2.5-flash"
+    assert CodeReviewer(provider="openai").model == "gpt-4o-mini"
+
+
+def test_google_payload_json_parsing():
+    reviewer = CodeReviewer(provider="google", use_llm=False)
+    payload = reviewer._parse_google_payload(
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "text": '{"comments":[{"line":2,"severity":"low","category":"style","title":"Name","comment":"Tighten name.","suggestion":"Rename it.","confidence":72}]}'
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+
+    assert payload["comments"][0]["confidence"] == 72
+
+
 def test_markdown_marks_low_confidence():
     comment = ReviewComment(
         file_path="x.py",

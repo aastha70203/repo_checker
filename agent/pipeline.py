@@ -19,11 +19,12 @@ class CodeReviewAgent:
         base_dir: str | None = None,
         max_chunks: int = 50,
         use_llm: bool = True,
-        model: str = "gpt-4o-mini",
+        provider: str = "google",
+        model: str | None = None,
     ) -> None:
         self.cloner = RepoCloner(base_dir=base_dir)
         self.parser = PythonASTParser()
-        self.reviewer = CodeReviewer(model=model, use_llm=use_llm)
+        self.reviewer = CodeReviewer(provider=provider, model=model, use_llm=use_llm)
         self.max_chunks = max_chunks
 
     def review_repository(
