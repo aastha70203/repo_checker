@@ -265,7 +265,7 @@ def test_grok_review_uses_mocked_response(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("XAI_API_KEY", "grok-fake-key")
     monkeypatch.setitem(sys.modules, "openai", fake_openai)
 
-    comments = CodeReviewer(provider="grok", model="grok-2").review_chunk(chunk)
+    comments = CodeReviewer(provider="grok", model="grok-2-1212").review_chunk(chunk)
 
     assert comments[0].source == "grok"
     assert comments[0].confidence == 85

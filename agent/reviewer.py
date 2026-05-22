@@ -61,7 +61,7 @@ class CodeReviewer:
         "google": "gemini-2.5-flash",
         "gemini": "gemini-2.5-flash",
         "openai": "gpt-4o-mini",
-        "grok": "grok-2",
+        "grok": "grok-2-1212",
     }
 
     def __init__(

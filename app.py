@@ -24,7 +24,7 @@ with st.sidebar:
         ["google", "openai", "grok"],
         format_func=lambda value: "Google AI Studio" if value == "google" else ("OpenAI" if value == "openai" else "xAI Grok"),
     )
-    default_model = "gemini-2.5-flash" if provider == "google" else ("gpt-4o-mini" if provider == "openai" else "grok-2")
+    default_model = "gemini-2.5-flash" if provider == "google" else ("gpt-4o-mini" if provider == "openai" else "grok-2-1212")
     model = st.text_input("Model", value=default_model)
     if provider == "google":
         google_key = st.text_input("Google AI Studio API key", type="password")
