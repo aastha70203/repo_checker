@@ -224,8 +224,7 @@ class RepoCloner:
 
     def _check_connectivity(self, host: str = "github.com", port: int = 443, timeout: int = 5) -> tuple[bool, str]:
         try:
-            socket.setdefaulttimeout(timeout)
-            with socket.create_connection((host, port)):
+            with socket.create_connection((host, port), timeout=timeout):
                 return True, ""
         except OSError:
             return False, "Cannot reach GitHub. Please check your internet connection and try again."

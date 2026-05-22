@@ -166,23 +166,65 @@ with tab_download:
     st.download_button("Download Markdown", markdown, file_name="review.md", mime="text/markdown")
     st.download_button("Download JSON", run_to_json(run), file_name="review.json", mime="application/json")
 
-    with st.expander("GitHub PR comments"):
+    with st.expander("GitHub PR Comments Integration", expanded=True):
+        st.markdown(
+            "🚀 **Auto-Post High-Confidence Findings**\n"
+            "This integration publishes review comments directly onto your pull request. "
+            "The **Commit SHA is dynamically resolved** by the code so you don't have to provide it."
+        )
+
+        # Prepopulate repository name from the active run URL
+        default_repo = ""
+        if run and getattr(run, "repo_url", None):
+            import re
+            url = run.repo_url.strip()
+            url = re.sub(r"^https?://(www\.)?github\.com/", "", url, flags=re.IGNORECASE)
+            url = url.strip("/")
+            if url.lower().endswith(".git"):
+                url = url[:-4]
+            parts = url.split("/")
+            if len(parts) >= 2:
+                default_repo = f"{parts[0]}/{parts[1]}"
+
         with st.form("github_pr_comments"):
-            repo_full_name = st.text_input("Repository", placeholder="owner/repo")
-            pull_number = st.number_input("Pull request", min_value=1, step=1)
-            commit_sha = st.text_input("Commit SHA")
-            github_token = st.text_input("GitHub token", type="password")
-            submitted = st.form_submit_button("Post high-confidence comments")
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                repo_full_name = st.text_input(
+                    "GitHub Repository (owner/repo)",
+                    value=default_repo,
+                    help="The target repository name on GitHub in owner/repo format."
+                )
+            with col2:
+                pull_number = st.number_input(
+                    "Pull Request #",
+                    min_value=1,
+                    step=1,
+                    help="The target Pull Request ID to comment on."
+                )
+
+            github_token = st.text_input(
+                "GitHub Personal Access Token",
+                type="password",
+                placeholder="Paste GITHUB_TOKEN (or leave blank to use GITHUB_TOKEN environment variable)",
+                help="Requires 'repo' scope or Pull Request comment write permissions."
+            )
+            
+            submitted = st.form_submit_button("Post high-confidence comments", type="primary")
 
         if submitted:
-            try:
-                result = post_pr_comments(
-                    repo_full_name=repo_full_name.strip(),
-                    pull_number=int(pull_number),
-                    commit_sha=commit_sha.strip(),
-                    comments=comments,
-                    token=github_token.strip() or None,
-                )
-                st.success(f"Posted {result['created']} comments. Skipped {result['skipped']}.")
-            except Exception as exc:
-                st.error(f"Could not post comments: {exc}")
+            if not repo_full_name.strip():
+                st.error("Please specify a valid GitHub repository (owner/repo).")
+            else:
+                with st.spinner("Resolving Pull Request metadata & posting comments..."):
+                    try:
+                        result = post_pr_comments(
+                            repo_full_name=repo_full_name.strip(),
+                            pull_number=int(pull_number),
+                            commit_sha=None,  # Automatically fetched from the PR head
+                            comments=comments,
+                            token=github_token.strip() or None,
+                        )
+                        st.success(f"🎉 Successfully posted **{result['created']}** comments. Skipped {result['skipped']} low-confidence findings.")
+                    except Exception as exc:
+                        st.error(f"Could not post comments: {exc}")
+
