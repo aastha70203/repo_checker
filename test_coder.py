@@ -273,6 +273,39 @@ def test_grok_review_uses_mocked_response(monkeypatch, tmp_path: Path):
     assert captured_kwargs["base_url"] == "https://api.x.ai/v1"
 
 
+def test_groq_review_uses_mocked_response(monkeypatch, tmp_path: Path):
+    file_path = tmp_path / "sample.py"
+    file_path.write_text("def f():\n    return 1\n", encoding="utf-8")
+    chunk = PythonASTParser().parse_file(file_path, "sample.py")[0]
+
+    captured_kwargs = {}
+
+    def fake_openai_init(api_key=None, base_url=None):
+        captured_kwargs["api_key"] = api_key
+        captured_kwargs["base_url"] = base_url
+        
+        message = SimpleNamespace(
+            content='{"comments":[{"line":1,"severity":"info","category":"maintainability","title":"Mock","comment":"Mocked Groq comment.","suggestion":"No change.","confidence":90}]}'
+        )
+        choice = SimpleNamespace(message=message)
+        response = SimpleNamespace(choices=[choice])
+        completions = SimpleNamespace(create=lambda **kwargs: response)
+        chat = SimpleNamespace(completions=completions)
+        return SimpleNamespace(chat=chat)
+
+    fake_openai = SimpleNamespace(OpenAI=fake_openai_init)
+
+    monkeypatch.setenv("GROQ_API_KEY", "groq-fake-key")
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+
+    comments = CodeReviewer(provider="groq", model="llama-3.3-70b-versatile").review_chunk(chunk)
+
+    assert comments[0].source == "groq"
+    assert comments[0].confidence == 90
+    assert captured_kwargs["api_key"] == "groq-fake-key"
+    assert captured_kwargs["base_url"] == "https://api.groq.com/openai/v1"
+
+
 def test_pipeline_orchestrates_fake_components(tmp_path: Path):
     chunk = SimpleNamespace(
         file_path="sample.py",
