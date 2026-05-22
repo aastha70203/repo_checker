@@ -113,26 +113,27 @@ class CodeReviewer:
                 if attempt >= retries - 1:
                     raise exc
 
-                # Detect rate limit errors dynamically
+                # Detect rate limit/quota errors dynamically and robustly
                 is_rate_limit = False
+                err_str = str(exc).lower()
                 
-                # Check for Requests HTTP 429 Error (Gemini)
-                import requests
-                if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
-                    if exc.response.status_code == 429:
-                        is_rate_limit = True
+                # Check common rate limit keywords in the error message
+                keywords = ["429", "resource_exhausted", "rate limit", "quota", "limit exceeded", "exhausted"]
+                if any(k in err_str for k in keywords):
+                    is_rate_limit = True
 
-                # Check for OpenAI RateLimitError
+                # Double check status code in HTTP response if available
                 try:
-                    import openai
-                    if isinstance(exc, openai.RateLimitError):
-                        is_rate_limit = True
-                except ImportError:
+                    if hasattr(exc, "response") and exc.response is not None:
+                        if getattr(exc.response, "status_code", None) == 429:
+                            is_rate_limit = True
+                except Exception:
                     pass
 
                 if is_rate_limit:
-                    # Cool down: wait 15 seconds * attempt multiplier
-                    cool_down_seconds = 15 * (attempt + 1)
+                    # Cool down: wait 30 seconds * attempt multiplier to guarantee the rolling minute resets
+                    cool_down_seconds = 30 * (attempt + 1)
+                    print(f"[Rate Limit] Hit rate limit on attempt {attempt + 1}. Cooling down for {cool_down_seconds} seconds before retrying...")
                     time.sleep(cool_down_seconds)
                 else:
                     time.sleep(delays[attempt])
