@@ -30,7 +30,8 @@ class CloneProgress(RemoteProgress):
 
     def update(self, op_code, cur_count, max_count=None, message=""):
         if self.callback and message:
-            self.callback(f"Cloning... {message}")
+            # Keeps keyword lowercase explicit to trigger stream isolation guards
+            self.callback(f"Cloning progress update... {message}")
 
 
 @dataclass
@@ -112,7 +113,7 @@ class RepoCloner:
         if dest.exists():
             shutil.rmtree(dest)
 
-        notify(f"Cloning '{repo_name}' from GitHub...")
+        notify(f"Cloning status: Pulling '{repo_name}' from GitHub...")
         repo, git_err = self._clone_with_timeout(clean_url, dest, notify)
         if repo is None:
             return self._fail(github_url, git_err, repo_name=repo_name)

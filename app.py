@@ -29,8 +29,13 @@ if run_review:
     status_lines: list[str] = []
 
     def update(message: str) -> None:
-        status_lines.append(message)
-        progress.code("\n".join(status_lines[-10:]))
+        # Securely print all incoming streams to the background terminal stdout console
+        print(f"[Agent Pipeline] {message}")
+        
+        # Guard clause: only update web UI text boxes for synchronous pipeline operations
+        if "cloning" not in message.lower():
+            status_lines.append(message)
+            progress.code("\n".join(status_lines[-10:]))
 
     with st.spinner("Reviewing repository..."):
         agent = CodeReviewAgent(max_chunks=max_chunks, use_llm=use_llm)
@@ -52,11 +57,59 @@ comments = run.comments
 high_conf = run.high_confidence_comments
 low_conf = run.low_confidence_comments
 
-metric_cols = st.columns(4)
-metric_cols[0].metric("Chunks reviewed", run.chunks_reviewed)
-metric_cols[1].metric("Comments", len(comments))
-metric_cols[2].metric("High confidence", len(high_conf))
-metric_cols[3].metric("Verify this", len(low_conf))
+# =========================================================================
+# 🔥 PIZZAZZ #1: REPO HEALTH SCORE GRAPHICAL BANNER & CALCULATION
+# =========================================================================
+severity_deductions = {
+    "critical": 20,
+    "high": 10,
+    "medium": 5,
+    "low": 2,
+    "info": 0
+}
+
+health_score = 100
+for c in comments:
+    severity_type = str(c.severity).lower()
+    health_score -= severity_deductions.get(severity_type, 0)
+
+# Constraint score within bounds of 0 and 100
+health_score = max(0, min(100, health_score))
+
+if health_score >= 85:
+    score_emoji = "🟢"
+    score_status = "Excellent / Highly Maintainable"
+    st.success(f"### {score_emoji} Repository Health Score: {health_score}/100 — **{score_status}**")
+elif health_score >= 60:
+    score_emoji = "🟡"
+    score_status = "Needs Active Attention / Structural Concerns"
+    st.warning(f"### {score_emoji} Repository Health Score: {health_score}/100 — **{score_status}**")
+else:
+    score_emoji = "🔴"
+    score_status = "Critical Security or Runtime Stability Risks"
+    st.error(f"### {score_emoji} Repository Health Score: {health_score}/100 — **{score_status}**")
+
+# Visual feedback bar element
+st.progress(health_score / 100)
+st.markdown("---")
+
+# =========================================================================
+# 📊 RECONFIGURED COMPREHENSIVE METRICS GRID
+# =========================================================================
+metric_cols = st.columns(5)
+metric_cols[0].metric("Chunks Reviewed", run.chunks_reviewed)
+metric_cols[1].metric("Total Comments", len(comments))
+metric_cols[2].metric("High Confidence", len(high_conf))
+metric_cols[3].metric("Verify This", len(low_conf))
+
+# Count syntax exceptions or parsing failures dynamically
+syntax_breaks_count = sum(
+    1 for c in comments 
+    if "syntax" in str(c.title).lower() or (c.category == "bug" and c.severity == "high")
+)
+metric_cols[4].metric("Syntax Breaks", syntax_breaks_count)
+
+st.markdown("---")
 
 if not comments:
     st.success("No review comments were generated.")
