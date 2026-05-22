@@ -15,4 +15,5 @@ env/
 
 review.md
 review.json
+real_runs/
 *.log
