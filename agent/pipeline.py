@@ -66,6 +66,11 @@ class CodeReviewAgent:
         for index, chunk in enumerate(chunks, start=1):
             notify(f"Reviewing chunk {index}/{len(chunks)}: {chunk.file_path}:{chunk.start_line}")
             comments.extend(self.reviewer.review_chunk(chunk))
+            
+            # Rate-limiting guard sleep to distribute queries evenly under free tier limits (e.g. 15 RPM)
+            if index < len(chunks) and self.reviewer.use_llm and self.reviewer.provider_configured():
+                import time
+                time.sleep(2.0)
 
         notify(f"Review complete: {len(comments)} comments.")
         return ReviewRun(

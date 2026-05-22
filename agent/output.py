@@ -85,7 +85,7 @@ def post_pr_comments(
     comments: List[ReviewComment],
     commit_sha: str | None = None,
     token: str | None = None,
-) -> Dict[str, int]:
+) -> Dict[str, Any]:
     """Post review comments to a GitHub pull request using the REST API.
 
     The commit_sha is now optional. If not provided, it is automatically fetched
@@ -99,6 +99,7 @@ def post_pr_comments(
 
     created = 0
     skipped = 0
+    failed_details: List[str] = []
     url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pull_number}/comments"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -150,8 +151,29 @@ def post_pr_comments(
             if response.status_code in {200, 201}:
                 created += 1
             else:
-                skipped += 1
-        except Exception:
-            skipped += 1
+                try:
+                    err_msg = response.json().get("message", response.text)
+                except Exception:
+                    err_msg = response.text
 
-    return {"created": created, "skipped": skipped}
+                if response.status_code == 422:
+                    failed_details.append(
+                        f"Could not post '{comment.title}' to {comment.file_path}:{comment.line}. "
+                        "Reason: Line/file is not part of the Pull Request diff."
+                    )
+                else:
+                    failed_details.append(
+                        f"Could not post '{comment.title}' to {comment.file_path}:{comment.line}. "
+                        f"Reason: HTTP {response.status_code} ({err_msg})"
+                    )
+        except Exception as exc:
+            failed_details.append(
+                f"Could not post '{comment.title}' to {comment.file_path}:{comment.line}. "
+                f"Error: {exc}"
+            )
+
+    return {
+        "created": created,
+        "skipped": skipped,
+        "failed_details": failed_details,
+    }

@@ -224,7 +224,12 @@ with tab_download:
                             comments=comments,
                             token=github_token.strip() or None,
                         )
-                        st.success(f"🎉 Successfully posted **{result['created']}** comments. Skipped {result['skipped']} low-confidence findings.")
+                        st.success(f"🎉 Successfully posted **{result['created']}** comments. Skipped **{result['skipped']}** low-confidence comments.")
+                        
+                        if result.get("failed_details"):
+                            with st.expander(f"⚠️ Failed to post {len(result['failed_details'])} high-confidence findings", expanded=True):
+                                for fail in result["failed_details"]:
+                                    st.warning(fail)
                     except Exception as exc:
                         st.error(f"Could not post comments: {exc}")
 

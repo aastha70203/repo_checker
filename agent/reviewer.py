@@ -103,17 +103,39 @@ class CodeReviewer:
         return False
 
     def _retry_with_backoff(self, api_call_func: Any) -> Any:
-        """Executes API calls with exponential backoff delays of 1s, 2s, 4s, 8s, 16s."""
-        delays = [1, 2, 4, 8, 16]
-        # Restrict attempts based on max_retries or delays length
-        retries = min(self.max_retries + 1, len(delays))
+        """Executes API calls with exponential backoff, utilizing extended cooling periods for rate limits."""
+        delays = [2, 4, 8, 16, 32]
+        retries = min(self.max_retries + 2, len(delays))
         for attempt in range(retries):
             try:
                 return api_call_func()
             except Exception as exc:
                 if attempt >= retries - 1:
                     raise exc
-                time.sleep(delays[attempt])
+
+                # Detect rate limit errors dynamically
+                is_rate_limit = False
+                
+                # Check for Requests HTTP 429 Error (Gemini)
+                import requests
+                if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
+                    if exc.response.status_code == 429:
+                        is_rate_limit = True
+
+                # Check for OpenAI RateLimitError
+                try:
+                    import openai
+                    if isinstance(exc, openai.RateLimitError):
+                        is_rate_limit = True
+                except ImportError:
+                    pass
+
+                if is_rate_limit:
+                    # Cool down: wait 15 seconds * attempt multiplier
+                    cool_down_seconds = 15 * (attempt + 1)
+                    time.sleep(cool_down_seconds)
+                else:
+                    time.sleep(delays[attempt])
 
     def _handle_fallback(self, chunk: CodeChunk, error_msg: str) -> List[ReviewComment]:
         return [
