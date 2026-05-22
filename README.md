@@ -1,84 +1,159 @@
 # AI Code Review Agent
 
-An autonomous Streamlit app that clones public GitHub repositories, parses Python files with `ast`, chunks large files safely, reviews each chunk with an LLM, and displays confidence-rated review comments.
+An autonomous Streamlit application that clones a public GitHub repository, parses Python source with `ast`, chunks large files, sends reviewable chunks to an LLM, and returns structured code review comments with severity ratings and self-rated confidence scores.
 
-## Features
+Low-confidence comments are separated into a `verify this` workflow so the agent can surface uncertainty instead of pretending every finding is equally reliable.
 
-- GitHub ingestion with URL normalization, shallow clone, timeout handling, cache, and friendly failure messages.
-- Python AST parsing for imports, classes, functions, syntax errors, and line-preserving chunks.
-- Large-file chunking so long functions and modules remain reviewable.
-- Google AI Studio / Gemini structured JSON review when `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set.
-- Optional OpenAI `gpt-4o-mini` review path when `OPENAI_API_KEY` is set.
-- Deterministic fallback reviewer for demo/tests when no API key is available.
-- Confidence scores from 0-100 percent, with comments below 60 percent shown as `verify this`.
-- Streamlit dashboard with severity/category/confidence filters and Markdown/JSON downloads.
-- Optional GitHub PR comment helper for high-confidence comments.
+## Core Features
+
+- Repository ingestion with GitPython, URL normalization, shallow clone, timeout handling, session cache, and readable failure messages.
+- Python AST extraction for imports, classes, functions, syntax errors, and line-preserving code chunks.
+- Large-file and long-function chunking with a configurable review cap.
+- LLM provider choice between Google AI Studio / Gemini and OpenAI.
+- Structured JSON prompting plus schema validation and normalization before comments reach the UI.
+- Deterministic local fallback checks for demos and tests without an API key.
+- Confidence scoring from 0-100 percent with a low-confidence `verify this` bucket.
+- Streamlit dashboard with health score, filters, low-confidence view, and Markdown/JSON downloads.
+- Optional GitHub PR comment posting for high-confidence comments.
+
+## Tech Stack
+
+- Ingestion: `GitPython`
+- Parsing: Python `ast`
+- LLMs: Google AI Studio / Gemini or OpenAI
+- Orchestration: Python pipeline modules
+- Output: Markdown, JSON, optional GitHub REST API comments
+- Dashboard: Streamlit
+- Tests: pytest
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
+```
+
+For Google AI Studio:
+
+```bash
 set GEMINI_API_KEY=your_google_ai_studio_key_here
+python coder.py karpathy/micrograd --provider google --model gemini-2.5-flash
+```
+
+For OpenAI:
+
+```bash
+set OPENAI_API_KEY=your_openai_key_here
+python coder.py karpathy/micrograd --provider openai --model gpt-4o-mini
+```
+
+For a no-key demo:
+
+```bash
+python coder.py karpathy/micrograd --no-llm
+```
+
+Run the dashboard:
+
+```bash
 streamlit run app.py
 ```
 
-The dashboard sidebar also supports pasting a temporary Google AI Studio or OpenAI API key for the current session.
-
-For a no-key local demo:
-
-```bash
-python coder.py psf/requests --no-llm
-```
-
-To run with Google AI Studio from the CLI:
-
-```bash
-set GEMINI_API_KEY=your_google_ai_studio_key_here
-python coder.py psf/requests --provider google --model gemini-2.5-flash
-```
+The Streamlit sidebar also accepts a temporary Google AI Studio or OpenAI API key for the current session.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A["GitHub repo URL"] --> B["RepoCloner - GitPython"]
-    B --> C["PythonASTParser - ast"]
-    C --> D["CodeChunk list"]
-    D --> E["CodeReviewer - Google AI Studio JSON or fallback"]
-    E --> F["ReviewComment objects"]
-    F --> G["Streamlit dashboard"]
-    F --> H["Markdown and JSON exports"]
-    F --> I["Optional GitHub PR comments"]
+    A["GitHub URL"] --> B["RepoCloner"]
+    B --> C["PythonASTParser"]
+    C --> D["CodeChunk objects"]
+    D --> E["CodeReviewer"]
+    E --> F["Schema validation"]
+    F --> G["ReviewComment objects"]
+    G --> H["Streamlit dashboard"]
+    G --> I["Markdown / JSON export"]
+    G --> J["Optional GitHub PR comments"]
 ```
 
 ## Project Structure
 
-- `agent/cloner.py` - repository clone and validation.
-- `agent/parser.py` - AST parsing and chunk generation.
-- `agent/reviewer.py` - LLM prompt, schema parsing, fallback checks.
-- `agent/models.py` - typed review data models.
-- `agent/output.py` - Markdown/JSON export and optional PR posting.
+- `agent/cloner.py` - GitHub clone, validation, timeout, cleanup, and cache logic.
+- `agent/parser.py` - Python AST parsing and chunk creation.
+- `agent/reviewer.py` - Google AI Studio/OpenAI provider calls, prompt construction, retry, and fallback review.
+- `agent/schema.py` - model-output schema validation and normalization.
+- `agent/models.py` - shared dataclasses for chunks, comments, and review runs.
+- `agent/output.py` - Markdown/JSON export and optional GitHub PR comment posting.
 - `agent/pipeline.py` - end-to-end orchestration.
 - `app.py` - Streamlit dashboard.
 - `coder.py` - CLI runner.
-- `test_coder.py` - focused parser/reviewer tests.
-- `test_cloner.py` - clone edge-case tests.
+- `test_coder.py` - parser, schema, provider, fallback, and pipeline tests.
+- `test_cloner.py` - live GitHub clone edge-case tests.
+
+## Testing
+
+Run unit tests:
+
+```bash
+python -m pytest test_coder.py -q
+```
+
+Run live clone tests:
+
+```bash
+python test_cloner.py
+```
+
+The clone tests require internet access because they use public GitHub repositories.
+
+Recommended manual test repos:
+
+- `karpathy/micrograd` - small, fast smoke test.
+- `pallets/flask` - larger Python project.
+- A small custom repository with an intentional `eval`, syntax error, or broad exception handler.
+
+## Deployment
+
+See `DEPLOYMENT.md` for Streamlit Cloud and HuggingFace Spaces steps.
+
+Minimum Streamlit Cloud settings:
+
+- Repository: this project repository.
+- Entrypoint: `app.py`.
+- Secrets: `GEMINI_API_KEY`, optionally `OPENAI_API_KEY` and `GITHUB_TOKEN`.
+
+## GitHub PR Comments
+
+The dashboard includes an optional `GitHub PR comments` form in the Download tab. It requires:
+
+- `owner/repo`
+- pull request number
+- commit SHA
+- `GITHUB_TOKEN` or a pasted token
+
+Only high-confidence comments are posted. Low-confidence comments remain in the `verify this` bucket.
 
 ## Known Limitations
 
-- AST extraction currently targets Python. JavaScript/Go can be added with tree-sitter.
-- Inline GitHub PR comments require a valid token, PR number, and commit SHA.
-- LLM quality depends on repository context; this version reviews chunks independently.
-- Very large repositories are capped by `max_chunks` for speed and cost control.
+- AST parsing currently supports Python only.
+- Chunks are reviewed independently, so cross-file reasoning is limited.
+- GitHub inline PR comments work best on changed lines that GitHub can map to the pull request diff.
+- Large repositories are capped by the `max_chunks` setting for cost and latency control.
+- LLM providers can still return weak comments; schema validation controls shape, not factual correctness.
 
 ## What I Would Build Next
 
 - tree-sitter support for JavaScript and Go.
-- Cross-file context retrieval for imports and call sites.
-- PR diff-aware review mode to comment only on changed lines.
-- Persistent run history and comparison across commits.
-- Evaluation harness with known-bug repositories and JSON schema conformance metrics.
+- Diff-aware PR review mode that comments only on changed lines.
+- Repo-level context retrieval for imports, call sites, and tests.
+- Persistent run history with comparison across commits.
+- A benchmark suite with seeded bugs and measured false-positive rates.
 
-## Test Repositories
+## Demo Flow
 
-Use public repositories only and cite any repositories used in the demo recording. Good small examples include `karpathy/micrograd`, `pallets/flask`, and your own test repository.
+1. Start the Streamlit app.
+2. Select Google AI Studio or OpenAI.
+3. Review `karpathy/micrograd` live.
+4. Show severity/category/confidence filters.
+5. Open the `verify this` tab.
+6. Download Markdown/JSON.
+7. If claiming the GitHub API bonus, post high-confidence comments to a real PR.

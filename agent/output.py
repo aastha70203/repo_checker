@@ -7,7 +7,7 @@ import os
 from collections import Counter
 from typing import Dict, Iterable, List
 
-from agent.models import ReviewComment, ReviewRun
+from agent.models import LOW_CONFIDENCE_THRESHOLD, ReviewComment, ReviewRun
 
 
 def comments_to_markdown(comments: Iterable[ReviewComment], title: str = "AI Code Review") -> str:
@@ -61,6 +61,10 @@ def post_pr_comments(
     token = token or os.getenv("GITHUB_TOKEN")
     if not token:
         raise ValueError("GITHUB_TOKEN is required to post PR comments.")
+    if not repo_full_name or "/" not in repo_full_name:
+        raise ValueError("repo_full_name must use owner/repo format.")
+    if not commit_sha:
+        raise ValueError("commit_sha is required to post inline PR comments.")
 
     import requests
 
@@ -73,7 +77,7 @@ def post_pr_comments(
         "X-GitHub-Api-Version": "2022-11-28",
     }
     for comment in comments:
-        if comment.confidence < 60:
+        if comment.confidence < LOW_CONFIDENCE_THRESHOLD:
             skipped += 1
             continue
         body = (

@@ -5,21 +5,24 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from typing import Any, Dict, List
 
 from agent.models import CodeChunk, ReviewComment
+from agent.schema import validate_review_payload
 
 
-ALLOWED_SEVERITIES = {"critical", "high", "medium", "low", "info"}
-ALLOWED_CATEGORIES = {"bug", "security", "performance", "maintainability", "style", "test"}
 GOOGLE_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+MAX_OUTPUT_TOKENS = 1200
 
 
 SYSTEM_PROMPT = """You are a senior code review agent.
 Return only valid JSON matching the user prompt's shape. Review the supplied Python code chunk for actionable issues.
 Do not invent context outside the chunk. Prefer no comment over a weak comment.
 Every comment must include a self-rated confidence integer from 0 to 100.
-Low confidence is acceptable when the issue needs human verification."""
+Use confidence >=85 only for issues directly supported by visible code.
+Use confidence 60-84 for probable issues with minor assumptions.
+Use confidence <60 when the comment needs human verification."""
 
 
 USER_PROMPT_TEMPLATE = """Review this code chunk.
@@ -59,10 +62,17 @@ class CodeReviewer:
         "openai": "gpt-4o-mini",
     }
 
-    def __init__(self, provider: str = "google", model: str | None = None, use_llm: bool = True) -> None:
+    def __init__(
+        self,
+        provider: str = "google",
+        model: str | None = None,
+        use_llm: bool = True,
+        max_retries: int = 2,
+    ) -> None:
         self.provider = provider.lower()
         self.model = model or self.DEFAULT_MODELS.get(self.provider, self.DEFAULT_MODELS["google"])
         self.use_llm = use_llm
+        self.max_retries = max_retries
 
     def review_chunk(self, chunk: CodeChunk) -> List[ReviewComment]:
         if not self.use_llm:
@@ -81,6 +91,13 @@ class CodeReviewer:
                 return self._handle_fallback(chunk, f"OpenAI ({self.model}) failed: {exc}")
 
         return self._heuristic_review(chunk)
+
+    def provider_configured(self) -> bool:
+        if self.provider == "google":
+            return bool(self._google_api_key())
+        if self.provider == "openai":
+            return bool(os.getenv("OPENAI_API_KEY"))
+        return False
 
     def _handle_fallback(self, chunk: CodeChunk, error_msg: str) -> List[ReviewComment]:
         return [
@@ -104,30 +121,35 @@ class CodeReviewer:
         if not api_key:
             raise ValueError("Set GEMINI_API_KEY or GOOGLE_API_KEY for Google AI Studio.")
 
-        response = requests.post(
-            GOOGLE_API_URL.format(model=self.model),
-            headers={
-                "Content-Type": "application/json",
-                "x-goog-api-key": api_key,
-            },
-            json={
-                "systemInstruction": {
-                    "parts": [{"text": SYSTEM_PROMPT}],
+        def send_request():
+            response = requests.post(
+                GOOGLE_API_URL.format(model=self.model),
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": api_key,
                 },
-                "contents": [
-                    {
-                        "role": "user",
-                        "parts": [{"text": self._build_user_prompt(chunk)}],
-                    }
-                ],
-                "generationConfig": {
-                    "temperature": 0.1,
-                    "responseMimeType": "application/json",
+                json={
+                    "systemInstruction": {
+                        "parts": [{"text": SYSTEM_PROMPT}],
+                    },
+                    "contents": [
+                        {
+                            "role": "user",
+                            "parts": [{"text": self._build_user_prompt(chunk)}],
+                        }
+                    ],
+                    "generationConfig": {
+                        "temperature": 0.1,
+                        "responseMimeType": "application/json",
+                        "maxOutputTokens": MAX_OUTPUT_TOKENS,
+                    },
                 },
-            },
-            timeout=60,
-        )
-        response.raise_for_status()
+                timeout=60,
+            )
+            response.raise_for_status()
+            return response
+
+        response = self._with_retries(send_request)
         payload = self._parse_google_payload(response.json())
         return self._comments_from_payload(payload, chunk, source="google-ai-studio")
 
@@ -143,14 +165,17 @@ class CodeReviewer:
         from openai import OpenAI
 
         client = OpenAI()
-        response = client.chat.completions.create(
-            model=self.model,
-            temperature=0.1,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": self._build_user_prompt(chunk)},
-            ],
-            response_format={"type": "json_object"},
+        response = self._with_retries(
+            lambda: client.chat.completions.create(
+                model=self.model,
+                temperature=0.1,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": self._build_user_prompt(chunk)},
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=MAX_OUTPUT_TOKENS,
+            )
         )
         content = response.choices[0].message.content or "{}"
         payload = self._loads_json_object(content)
@@ -169,29 +194,7 @@ class CodeReviewer:
         )
 
     def _comments_from_payload(self, payload: Dict[str, Any], chunk: CodeChunk, source: str) -> List[ReviewComment]:
-        raw_comments = payload.get("comments", [])
-        if not isinstance(raw_comments, list):
-            raw_comments = []
-        comments: List[ReviewComment] = []
-        for raw in raw_comments[:12]:
-            if not isinstance(raw, dict):
-                continue
-            severity = str(raw.get("severity", "info")).lower()
-            category = str(raw.get("category", "maintainability")).lower()
-            comments.append(
-                ReviewComment(
-                    file_path=chunk.file_path,
-                    line=self._clean_line(raw.get("line"), chunk),
-                    severity=severity if severity in ALLOWED_SEVERITIES else "info",
-                    category=category if category in ALLOWED_CATEGORIES else "maintainability",
-                    title=str(raw.get("title") or "Review comment")[:120],
-                    comment=str(raw.get("comment") or "").strip()[:1500],
-                    suggestion=str(raw.get("suggestion") or "Review this area manually.").strip()[:1500],
-                    confidence=self._clean_confidence(raw.get("confidence", 50)),
-                    source=source,
-                )
-            )
-        return [comment for comment in comments if comment.comment]
+        return validate_review_payload(payload, chunk, source)
 
     def _heuristic_review(self, chunk: CodeChunk) -> List[ReviewComment]:
         comments: List[ReviewComment] = []
@@ -249,15 +252,14 @@ class CodeReviewer:
             loaded = json.loads(match.group(0)) if match else {}
         return loaded if isinstance(loaded, dict) else {}
 
-    def _clean_confidence(self, value: Any) -> int:
-        try:
-            return max(0, min(100, int(float(value))))
-        except (TypeError, ValueError):
-            return 50
-
-    def _clean_line(self, value: Any, chunk: CodeChunk) -> int:
-        try:
-            line = int(value)
-        except (TypeError, ValueError):
-            return chunk.start_line
-        return max(chunk.start_line, min(chunk.end_line, line))
+    def _with_retries(self, call):
+        last_error = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                return call()
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    break
+                time.sleep(0.8 * (2 ** attempt))
+        raise last_error

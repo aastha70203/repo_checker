@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from agent.models import LOW_CONFIDENCE_THRESHOLD
-from agent.output import comments_to_markdown, run_to_json
+from agent.output import comments_to_markdown, post_pr_comments, run_to_json
 from agent.pipeline import CodeReviewAgent
 
 
@@ -165,3 +165,24 @@ with tab_download:
     markdown = comments_to_markdown(comments, f"AI Code Review - {run.repo_name}")
     st.download_button("Download Markdown", markdown, file_name="review.md", mime="text/markdown")
     st.download_button("Download JSON", run_to_json(run), file_name="review.json", mime="application/json")
+
+    with st.expander("GitHub PR comments"):
+        with st.form("github_pr_comments"):
+            repo_full_name = st.text_input("Repository", placeholder="owner/repo")
+            pull_number = st.number_input("Pull request", min_value=1, step=1)
+            commit_sha = st.text_input("Commit SHA")
+            github_token = st.text_input("GitHub token", type="password")
+            submitted = st.form_submit_button("Post high-confidence comments")
+
+        if submitted:
+            try:
+                result = post_pr_comments(
+                    repo_full_name=repo_full_name.strip(),
+                    pull_number=int(pull_number),
+                    commit_sha=commit_sha.strip(),
+                    comments=comments,
+                    token=github_token.strip() or None,
+                )
+                st.success(f"Posted {result['created']} comments. Skipped {result['skipped']}.")
+            except Exception as exc:
+                st.error(f"Could not post comments: {exc}")

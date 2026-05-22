@@ -51,6 +51,10 @@ class CodeReviewAgent:
         notify("Parsing Python files with ast...")
         chunks = self.parser.parse_repository(clone_result.repo_path)
         warnings = list(clone_result.warnings)
+        if self.reviewer.use_llm and not self.reviewer.provider_configured():
+            warnings.append(
+                f"No API key configured for {self.reviewer.provider}; used deterministic local checks instead."
+            )
         if not chunks:
             warnings.append("No reviewable Python chunks were found.")
 
