@@ -64,7 +64,10 @@ def _clean_text(value: Any, default: str = "", max_length: int = 1500) -> str:
 
 def _clean_confidence(value: Any) -> int:
     try:
-        return max(0, min(100, int(float(value))))
+        val = float(value)
+        if 0.0 < val <= 1.0:
+            val *= 100
+        return max(0, min(100, int(val)))
     except (TypeError, ValueError):
         return 50
 

@@ -370,3 +370,13 @@ def test_markdown_marks_low_confidence():
 
     assert "verify this" in markdown
     assert "Confidence: 40%" in markdown
+
+
+def test_clean_confidence_scales_decimals():
+    from agent.schema import _clean_confidence
+    assert _clean_confidence(0.85) == 85
+    assert _clean_confidence("0.95") == 95
+    assert _clean_confidence(1.0) == 100
+    assert _clean_confidence(75) == 75
+    assert _clean_confidence("60") == 60
+    assert _clean_confidence(0) == 0
