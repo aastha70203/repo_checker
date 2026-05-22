@@ -4,26 +4,51 @@ from __future__ import annotations
 
 import json
 import os
-from collections import Counter
 from typing import Dict, Iterable, List
 
-from agent.models import LOW_CONFIDENCE_THRESHOLD, ReviewComment, ReviewRun
+from agent.models import ReviewComment, ReviewRun
+
+# Logical priority sorting for severity levels
+SEVERITY_ORDER = {
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    "low": 3,
+    "info": 4
+}
 
 
 def comments_to_markdown(comments: Iterable[ReviewComment], title: str = "AI Code Review") -> str:
+    """Formats findings into a consistent, severity-sorted Markdown report."""
     comments = list(comments)
     lines = [f"# {title}", ""]
     if not comments:
         lines.append("No review comments were generated.")
         return "\n".join(lines)
 
-    severity_counts = Counter(c.severity for c in comments)
+    # Compute severity frequencies
+    severity_counts: Dict[str, int] = {}
+    for c in comments:
+        sev = c.severity.lower()
+        severity_counts[sev] = severity_counts.get(sev, 0) + 1
+
     lines.append("## Summary")
-    for severity, count in sorted(severity_counts.items()):
+    # Sort severities logically by severity order
+    sorted_sevs = sorted(
+        severity_counts.items(),
+        key=lambda item: SEVERITY_ORDER.get(item[0], 99)
+    )
+    for severity, count in sorted_sevs:
         lines.append(f"- {severity}: {count}")
     lines.append("")
 
-    for comment in sorted(comments, key=lambda c: (c.file_path, c.line, c.severity)):
+    # Sort comments logically by severity rank, file path, and then line number
+    sorted_comments = sorted(
+        comments,
+        key=lambda c: (SEVERITY_ORDER.get(c.severity.lower(), 99), c.file_path, c.line)
+    )
+
+    for comment in sorted_comments:
         verify = " [verify this]" if comment.verify_label else ""
         lines.extend(
             [
@@ -43,7 +68,15 @@ def comments_to_markdown(comments: Iterable[ReviewComment], title: str = "AI Cod
 
 
 def run_to_json(run: ReviewRun) -> str:
-    return json.dumps(run.to_dict(), indent=2)
+    """Defensively serializes the pipeline run details into raw JSON format."""
+    try:
+        return json.dumps(run.to_dict(), indent=2)
+    except Exception as exc:
+        return json.dumps({
+            "error": f"JSON serialization failed: {exc}",
+            "repo_url": run.repo_url,
+            "repo_name": run.repo_name,
+        }, indent=2)
 
 
 def post_pr_comments(
@@ -61,8 +94,6 @@ def post_pr_comments(
     token = token or os.getenv("GITHUB_TOKEN")
     if not token:
         raise ValueError("GITHUB_TOKEN is required to post PR comments.")
-    if not repo_full_name or "/" not in repo_full_name:
-        raise ValueError("repo_full_name must use owner/repo format.")
 
     import requests
 
@@ -75,7 +106,7 @@ def post_pr_comments(
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-    # Automatically fetch commit SHA if not supplied.
+    # Automatically fetch Commit SHA if not supplied
     if not commit_sha:
         pr_url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pull_number}"
         try:
@@ -94,7 +125,7 @@ def post_pr_comments(
         raise ValueError("Commit SHA could not be determined. Please supply it manually.")
 
     for comment in comments:
-        if comment.confidence < LOW_CONFIDENCE_THRESHOLD:
+        if comment.confidence < 60:
             skipped += 1
             continue
         body = (
@@ -122,4 +153,5 @@ def post_pr_comments(
                 skipped += 1
         except Exception:
             skipped += 1
+
     return {"created": created, "skipped": skipped}

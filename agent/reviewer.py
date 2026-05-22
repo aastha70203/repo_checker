@@ -1,124 +1,143 @@
-"""Report generation and optional GitHub PR comment posting."""
+
+"""LLM review client with schema repair, exponential backoff retries, and deterministic fallback."""
 
 from __future__ import annotations
 
 import json
 import os
-from collections import Counter
-from typing import Dict, Iterable, List
+import re
+import time
+from typing import Any, Dict, List
 
-from agent.models import ReviewComment, ReviewRun
-
-
-def comments_to_markdown(comments: Iterable[ReviewComment], title: str = "AI Code Review") -> str:
-    comments = list(comments)
-    lines = [f"# {title}", ""]
-    if not comments:
-        lines.append("No review comments were generated.")
-        return "\n".join(lines)
-
-    severity_counts = Counter(c.severity for c in comments)
-    lines.append("## Summary")
-    for severity, count in sorted(severity_counts.items()):
-        lines.append(f"- {severity}: {count}")
-    lines.append("")
-
-    for comment in sorted(comments, key=lambda c: (c.file_path, c.line, c.severity)):
-        verify = " [verify this]" if comment.verify_label else ""
-        lines.extend(
-            [
-                f"## {comment.file_path}:{comment.line} - {comment.title}{verify}",
-                f"- Severity: {comment.severity}",
-                f"- Category: {comment.category}",
-                f"- Confidence: {comment.confidence}%",
-                f"- Source: {comment.source}",
-                "",
-                comment.comment,
-                "",
-                f"Suggestion: {comment.suggestion}",
-                "",
-            ]
-        )
-    return "\n".join(lines).strip() + "\n"
+from agent.models import CodeChunk, ReviewComment
 
 
-def run_to_json(run: ReviewRun) -> str:
-    return json.dumps(run.to_dict(), indent=2)
+ALLOWED_SEVERITIES = {"critical", "high", "medium", "low", "info"}
+ALLOWED_CATEGORIES = {"bug", "security", "performance", "maintainability", "style", "test"}
 
 
-def post_pr_comments(
-    repo_full_name: str,
-    pull_number: int,
-    comments: List[ReviewComment],
-    commit_sha: str | None = None,
-    token: str | None = None,
-) -> Dict[str, int]:
-    """Post review comments to a GitHub pull request using the REST API.
+SYSTEM_PROMPT = """You are a senior code review agent.
+Return only valid JSON matching the user prompt's shape.
 
-    The commit_sha is now optional. If not provided, it is automatically fetched
-    from the GitHub Pull Request API using the supplied token.
-    """
-    token = token or os.getenv("GITHUB_TOKEN")
-    if not token:
-        raise ValueError("GITHUB_TOKEN is required to post PR comments.")
+CRITICAL CONTEXT INSTRUCTIONS:
+The code chunk you are reviewing has been semantically sliced from a larger file.
+1. Decorators, imports, parent classes, module constants, or helper methods defined elsewhere are expected to be available at runtime. DO NOT flag them as "missing" or "undefined" unless they are obviously incorrect in their local context.
+2. Focus strictly on logical bugs, security vulnerabilities, performance optimization, and formatting inside the provided boundaries.
+3. Keep comments highly actionable and meaningful. Prefer no comment over a weak or false-positive comment."""
 
-    import requests
 
-    created = 0
-    skipped = 0
-    url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pull_number}/comments"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
+USER_PROMPT_TEMPLATE = """Review this code chunk.
 
-    # Automatically fetch Commit SHA if not supplied
-    if not commit_sha:
-        pr_url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pull_number}"
-        try:
-            pr_response = requests.get(pr_url, headers=headers, timeout=15)
-            if pr_response.status_code == 200:
-                pr_data = pr_response.json()
-                commit_sha = pr_data.get("head", {}).get("sha")
-            else:
-                raise ValueError(
-                    f"Failed to fetch PR head commit from GitHub API (HTTP {pr_response.status_code}): {pr_response.text}"
-                )
-        except Exception as exc:
-            raise ValueError(f"Could not automatically resolve Commit SHA: {exc}")
+File: {file_path}
+Lines: {start_line}-{end_line}
+Imports: {imports}
+Symbols: {symbols}
+Parse error: {parse_error}
 
-    if not commit_sha:
-        raise ValueError("Commit SHA could not be determined. Please supply it manually.")
+Return JSON with this shape:
+{{
+  "comments": [
+    {{
+      "line": 12,
+      "severity": "high|medium|low|info|critical",
+      "category": "bug|security|performance|maintainability|style|test",
+      "title": "short title",
+      "comment": "why this matters",
+      "suggestion": "specific fix",
+      "confidence": 0
+    }}
+  ]
+}}
 
-    for comment in comments:
-        if comment.confidence < 60:
-            skipped += 1
-            continue
-        body = (
-            f"**{comment.title}**\n\n"
-            f"{comment.comment}\n\n"
-            f"Suggestion: {comment.suggestion}\n\n"
-            f"Severity: `{comment.severity}` | Confidence: `{comment.confidence}%`"
-        )
-        try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json={
-                    "body": body,
-                    "commit_id": commit_sha,
-                    "path": comment.file_path,
-                    "line": comment.line,
-                    "side": "RIGHT",
-                },
-                timeout=20,
+Code:
+```python
+{code}
+```"""
+
+
+class CodeReviewer:
+    """Review chunks using OpenAI or Google Gemini when configured, otherwise a local demo reviewer."""
+
+    def __init__(self, model: str = "gpt-4o-mini", use_llm: bool = True, provider: str = "openai") -> None:
+        # Realigned parameters keep original positional/keyword arguments backward compatible
+        self.model = model
+        self.use_llm = use_llm
+        self.provider = provider.lower()
+
+    def review_chunk(self, chunk: CodeChunk) -> List[ReviewComment]:
+        if not self.use_llm:
+            return self._heuristic_review(chunk)
+
+        # Route dynamically based on chosen API provider
+        if self.provider == "openai" and os.getenv("OPENAI_API_KEY"):
+            try:
+                return self._retry_with_backoff(lambda: self._review_with_openai(chunk))
+            except Exception as exc:
+                return self._handle_fallback(chunk, f"OpenAI ({self.model}) rate limits or server issues. Error: {exc}")
+
+        elif self.provider == "gemini" and (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
+            try:
+                return self._retry_with_backoff(lambda: self._review_with_gemini(chunk))
+            except Exception as exc:
+                return self._handle_fallback(chunk, f"Gemini API rate limits exceeded or key quota exhausted. Error: {exc}")
+
+        return self._heuristic_review(chunk)
+
+    def _retry_with_backoff(self, api_call_func: Any, retries: int = 5) -> Any:
+        """Executes API calls with exponential backoff delays of 1s, 2s, 4s, 8s, 16s."""
+        delays = [1, 2, 4, 8, 16]
+        for attempt, delay in enumerate(delays):
+            try:
+                return api_call_func()
+            except Exception as exc:
+                # If we've run out of retries, raise the error to trigger fallback
+                if attempt >= retries - 1 or attempt >= len(delays) - 1:
+                    raise exc
+                time.sleep(delay)
+
+    def _handle_fallback(self, chunk: CodeChunk, error_msg: str) -> List[ReviewComment]:
+        return [
+            ReviewComment(
+                file_path=chunk.file_path,
+                line=chunk.start_line,
+                severity="info",
+                category="maintainability",
+                title="LLM review unavailable",
+                comment=f"The review agent encountered temporary connectivity issues: {error_msg}",
+                suggestion="Check your API Key status or wait a moment for rate limits to reset.",
+                confidence=45,
+                source="fallback",
             )
-            if response.status_code in {200, 201}:
-                created += 1
-            else:
-                skipped += 1
-        except Exception:
-            skipped += 1
+        ] + self._heuristic_review(chunk)
 
-    return {"created": created, "skipped": skipped}
+    def _parse_json_defensively(self, text: str) -> Dict[str, Any]:
+        """A robust defensive JSON extractor protecting against Markdown blocks or stray conversational tokens."""
+        text = text.strip()
+        if not text:
+            return {}
+
+        # 1. Attempt standard direct parse
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # 2. Extract contents matching outer brace parameters {...}
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        # 3. Clean common Markdown artifacts and retry
+        cleaned = re.sub(r"^```json|```python|```|^```", "", text, flags=re.MULTILINE).strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+        # If all parsing attempts fail, return empty dict to avoid crashing the review process
+        return {}
+
+
+
