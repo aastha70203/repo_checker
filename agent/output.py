@@ -49,22 +49,20 @@ def run_to_json(run: ReviewRun) -> str:
 def post_pr_comments(
     repo_full_name: str,
     pull_number: int,
-    commit_sha: str,
     comments: List[ReviewComment],
+    commit_sha: str | None = None,
     token: str | None = None,
 ) -> Dict[str, int]:
     """Post review comments to a GitHub pull request using the REST API.
 
-    This is intentionally optional. It runs only when the user supplies a token,
-    repo, PR number, and commit SHA.
+    The commit_sha is now optional. If not provided, it is automatically fetched
+    from the GitHub Pull Request API using the supplied token.
     """
     token = token or os.getenv("GITHUB_TOKEN")
     if not token:
         raise ValueError("GITHUB_TOKEN is required to post PR comments.")
     if not repo_full_name or "/" not in repo_full_name:
         raise ValueError("repo_full_name must use owner/repo format.")
-    if not commit_sha:
-        raise ValueError("commit_sha is required to post inline PR comments.")
 
     import requests
 
@@ -76,6 +74,25 @@ def post_pr_comments(
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
+
+    # Automatically fetch commit SHA if not supplied.
+    if not commit_sha:
+        pr_url = f"https://api.github.com/repos/{repo_full_name}/pulls/{pull_number}"
+        try:
+            pr_response = requests.get(pr_url, headers=headers, timeout=15)
+            if pr_response.status_code == 200:
+                pr_data = pr_response.json()
+                commit_sha = pr_data.get("head", {}).get("sha")
+            else:
+                raise ValueError(
+                    f"Failed to fetch PR head commit from GitHub API (HTTP {pr_response.status_code}): {pr_response.text}"
+                )
+        except Exception as exc:
+            raise ValueError(f"Could not automatically resolve Commit SHA: {exc}")
+
+    if not commit_sha:
+        raise ValueError("Commit SHA could not be determined. Please supply it manually.")
+
     for comment in comments:
         if comment.confidence < LOW_CONFIDENCE_THRESHOLD:
             skipped += 1
@@ -86,20 +103,23 @@ def post_pr_comments(
             f"Suggestion: {comment.suggestion}\n\n"
             f"Severity: `{comment.severity}` | Confidence: `{comment.confidence}%`"
         )
-        response = requests.post(
-            url,
-            headers=headers,
-            json={
-                "body": body,
-                "commit_id": commit_sha,
-                "path": comment.file_path,
-                "line": comment.line,
-                "side": "RIGHT",
-            },
-            timeout=20,
-        )
-        if response.status_code in {200, 201}:
-            created += 1
-        else:
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json={
+                    "body": body,
+                    "commit_id": commit_sha,
+                    "path": comment.file_path,
+                    "line": comment.line,
+                    "side": "RIGHT",
+                },
+                timeout=20,
+            )
+            if response.status_code in {200, 201}:
+                created += 1
+            else:
+                skipped += 1
+        except Exception:
             skipped += 1
     return {"created": created, "skipped": skipped}
